@@ -5,12 +5,10 @@
  * Instagram، ويتحقق من وجود كلمة مفتاحية في نص التعليق، ثم يرسل
  * "رد خاص" (Private Reply) تلقائي يحتوي على الرابط المطلوب.
  *
- * يحتوي أيضًا على أدوات تشخيص لتسهيل حل المشاكل بدون الحاجة لسجلات Netlify:
- * - GET ?diag=1  : يعرض حالة متغيرات البيئة (بدون كشف القيم السرية)
- * - GET ?debug=1 : يعرض تفاصيل آخر محاولة إرسال رسالة (نجاح/فشل + رد Meta)
+ * وضع تشخيص مؤقت: يرسل تفاصيل كل محاولة إلى webhook.site لتسهيل
+ * تتبع الأخطاء بدون الحاجة لسجلات Netlify. احذف هذا الجزء لاحقًا
+ * بعد التأكد من عمل كل شيء بشكل صحيح.
  */
-
-const { getStore } = require("@netlify/blobs");
 
 // ============ الإعدادات (تُقرأ من Environment Variables في Netlify) ============
 const VERIFY_TOKEN = process.env.IG_VERIFY_TOKEN;
@@ -19,19 +17,25 @@ const KEYWORD = (process.env.IG_KEYWORD !== undefined ? process.env.IG_KEYWORD :
 const LINK_MESSAGE = process.env.IG_LINK_MESSAGE || "تفضل الرابط: https://example.com";
 const GRAPH_API_VERSION = "v21.0";
 
-async function saveDebug(record) {
+// == رابط تشخيص مؤقت (احذفه لاحقًا) ==
+const DEBUG_WEBHOOK_URL = "https://webhook.site/c6eacf17-b96e-4beb-a349-47079db1b559";
+
+async function sendDebug(record) {
   try {
-    const store = getStore("debug");
-    await store.setJSON("last-event", { ...record, savedAt: new Date().toISOString() });
+    await fetch(DEBUG_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(record),
+    });
   } catch (e) {
-    // لا نكسر الدالة إذا فشل التخزين نفسه
+    // تجاهل أي خطأ بإرسال التشخيص حتى لا يوقف الدالة
   }
 }
 
 exports.handler = async (event) => {
   const params = event.queryStringParameters || {};
 
-  // ---------- 0أ) أداة تشخيص المتغيرات ----------
+  // ---------- 0) أداة تشخيص المتغيرات ----------
   if (event.httpMethod === "GET" && params.diag === "1") {
     return {
       statusCode: 200,
@@ -44,25 +48,6 @@ exports.handler = async (event) => {
         IG_LINK_MESSAGE_value: LINK_MESSAGE,
       }, null, 2),
     };
-  }
-
-  // ---------- 0ب) أداة تشخيص: آخر محاولة إرسال ----------
-  if (event.httpMethod === "GET" && params.debug === "1") {
-    try {
-      const store = getStore("debug");
-      const record = await store.get("last-event", { type: "json" });
-      return {
-        statusCode: 200,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(record || { message: "لا توجد أي محاولة مسجلة بعد" }, null, 2),
-      };
-    } catch (e) {
-      return {
-        statusCode: 200,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "تعذر قراءة سجل التشخيص", details: String(e) }, null, 2),
-      };
-    }
   }
 
   // ---------- 1) التحقق من الـ Webhook (خطوة تسجيل الرابط لدى Meta) ----------
@@ -132,12 +117,12 @@ exports.handler = async (event) => {
         }
       }
 
-      await saveDebug(debugRecord);
+      await sendDebug(debugRecord);
       return { statusCode: 200, body: "EVENT_RECEIVED" };
     } catch (err) {
       debugRecord.stage = "exception";
       debugRecord.error = String(err);
-      await saveDebug(debugRecord);
+      await sendDebug(debugRecord);
       return { statusCode: 200, body: "EVENT_RECEIVED_WITH_ERROR" };
     }
   }
