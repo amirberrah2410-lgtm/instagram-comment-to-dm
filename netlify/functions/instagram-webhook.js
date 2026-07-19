@@ -12,7 +12,7 @@
 // ============ الإعدادات (تُقرأ من Environment Variables في Netlify) ============
 const VERIFY_TOKEN = process.env.IG_VERIFY_TOKEN;       // كلمة سر تختارها أنت للتحقق من الـ Webhook
 const PAGE_ACCESS_TOKEN = process.env.IG_PAGE_ACCESS_TOKEN; // Access Token الخاص بصفحة Facebook/Instagram
-const KEYWORD = (process.env.IG_KEYWORD || "رابط").toLowerCase(); // الكلمة المفتاحية
+const KEYWORD = (process.env.IG_KEYWORD !== undefined ? process.env.IG_KEYWORD : "رابط").toLowerCase(); // الكلمة المفتاحية
 const LINK_MESSAGE = process.env.IG_LINK_MESSAGE || "تفضل الرابط: https://example.com";
 const GRAPH_API_VERSION = "v21.0";
 
