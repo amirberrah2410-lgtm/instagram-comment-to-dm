@@ -5,21 +5,34 @@
  * Instagram، ويتحقق من وجود كلمة مفتاحية في نص التعليق، ثم يرسل
  * "رد خاص" (Private Reply) تلقائي يحتوي على الرابط المطلوب.
  *
- * لا يوجد أي شرط للتحقق من المتابعة هنا (كما طلبت) - أي شخص يكتب
- * الكلمة المفتاحية في التعليق سيستلم الرسالة.
+ * يحتوي أيضًا على أدوات تشخيص لتسهيل حل المشاكل بدون الحاجة لسجلات Netlify:
+ * - GET ?diag=1  : يعرض حالة متغيرات البيئة (بدون كشف القيم السرية)
+ * - GET ?debug=1 : يعرض تفاصيل آخر محاولة إرسال رسالة (نجاح/فشل + رد Meta)
  */
 
+const { getStore } = require("@netlify/blobs");
+
 // ============ الإعدادات (تُقرأ من Environment Variables في Netlify) ============
-const VERIFY_TOKEN = process.env.IG_VERIFY_TOKEN;       // كلمة سر تختارها أنت للتحقق من الـ Webhook
-const PAGE_ACCESS_TOKEN = process.env.IG_PAGE_ACCESS_TOKEN; // Access Token الخاص بصفحة Facebook/Instagram
-const KEYWORD = (process.env.IG_KEYWORD !== undefined ? process.env.IG_KEYWORD : "رابط").toLowerCase(); // الكلمة المفتاحية
+const VERIFY_TOKEN = process.env.IG_VERIFY_TOKEN;
+const PAGE_ACCESS_TOKEN = process.env.IG_PAGE_ACCESS_TOKEN;
+const KEYWORD = (process.env.IG_KEYWORD !== undefined ? process.env.IG_KEYWORD : "رابط").toLowerCase();
 const LINK_MESSAGE = process.env.IG_LINK_MESSAGE || "تفضل الرابط: https://example.com";
 const GRAPH_API_VERSION = "v21.0";
 
+async function saveDebug(record) {
+  try {
+    const store = getStore("debug");
+    await store.setJSON("last-event", { ...record, savedAt: new Date().toISOString() });
+  } catch (e) {
+    // لا نكسر الدالة إذا فشل التخزين نفسه
+  }
+}
+
 exports.handler = async (event) => {
-  // ---------- 0) أداة تشخيص: تحقق من وصول المتغيرات دون كشف قيمها ----------
-  // افتح: https://YOUR-SITE.netlify.app/.netlify/functions/instagram-webhook?diag=1
-  if (event.httpMethod === "GET" && event.queryStringParameters && event.queryStringParameters.diag === "1") {
+  const params = event.queryStringParameters || {};
+
+  // ---------- 0أ) أداة تشخيص المتغيرات ----------
+  if (event.httpMethod === "GET" && params.diag === "1") {
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
@@ -33,28 +46,45 @@ exports.handler = async (event) => {
     };
   }
 
+  // ---------- 0ب) أداة تشخيص: آخر محاولة إرسال ----------
+  if (event.httpMethod === "GET" && params.debug === "1") {
+    try {
+      const store = getStore("debug");
+      const record = await store.get("last-event", { type: "json" });
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(record || { message: "لا توجد أي محاولة مسجلة بعد" }, null, 2),
+      };
+    } catch (e) {
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ error: "تعذر قراءة سجل التشخيص", details: String(e) }, null, 2),
+      };
+    }
+  }
+
   // ---------- 1) التحقق من الـ Webhook (خطوة تسجيل الرابط لدى Meta) ----------
   if (event.httpMethod === "GET") {
-    const params = event.queryStringParameters || {};
     const mode = params["hub.mode"];
     const token = params["hub.verify_token"];
     const challenge = params["hub.challenge"];
 
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
-      return {
-        statusCode: 200,
-        body: challenge,
-      };
+      return { statusCode: 200, body: challenge };
     }
     return { statusCode: 403, body: "Verification failed" };
   }
 
   // ---------- 2) استقبال أحداث التعليقات ----------
   if (event.httpMethod === "POST") {
+    let debugRecord = { stage: "start" };
+
     try {
       const body = JSON.parse(event.body || "{}");
+      debugRecord.rawBody = body;
 
-      // بنية أحداث Instagram: entry[].changes[].value
       const entries = body.entry || [];
 
       for (const entry of entries) {
@@ -65,28 +95,49 @@ exports.handler = async (event) => {
 
           const value = change.value || {};
           const commentText = (value.text || "").toLowerCase();
-          const commentId = value.id; // معرف التعليق - نستخدمه لإرسال Private Reply
+          const commentId = value.id;
 
-          if (!commentId) continue;
+          debugRecord.commentText = value.text || "";
+          debugRecord.commentId = commentId;
+          debugRecord.fromId = value.from ? value.from.id : null;
+          debugRecord.entryId = entry.id;
 
-          // تجاهل تعليقات الحساب نفسه (لتفادي حلقة لا نهائية)
-          if (value.from && value.from.id === entry.id) continue;
+          if (!commentId) {
+            debugRecord.stage = "no_comment_id";
+            continue;
+          }
 
-          // == وضع التشخيص المؤقت ==
-          // إذا كانت IG_KEYWORD فارغة، يرد البوت على أي تعليق بدون شرط
-          // (فقط لأغراض الاختبار، أعد الكلمة المفتاحية لاحقًا)
+          if (value.from && value.from.id === entry.id) {
+            debugRecord.stage = "ignored_self_comment";
+            continue;
+          }
+
           const matchesKeyword = KEYWORD === "" ? true : commentText.includes(KEYWORD);
+          debugRecord.matchesKeyword = matchesKeyword;
+          debugRecord.keywordUsed = KEYWORD;
 
           if (matchesKeyword) {
-            await sendPrivateReply(commentId, LINK_MESSAGE);
+            debugRecord.stage = "sending";
+            try {
+              const apiResult = await sendPrivateReply(commentId, LINK_MESSAGE);
+              debugRecord.stage = "sent";
+              debugRecord.apiResult = apiResult;
+            } catch (sendErr) {
+              debugRecord.stage = "send_failed";
+              debugRecord.sendError = String(sendErr);
+            }
+          } else {
+            debugRecord.stage = "keyword_not_matched";
           }
         }
       }
 
+      await saveDebug(debugRecord);
       return { statusCode: 200, body: "EVENT_RECEIVED" };
     } catch (err) {
-      console.error("Webhook processing error:", err);
-      // نرجع 200 دائمًا لـ Meta حتى لا تعيد المحاولة بشكل متكرر بسبب خطأ داخلي
+      debugRecord.stage = "exception";
+      debugRecord.error = String(err);
+      await saveDebug(debugRecord);
       return { statusCode: 200, body: "EVENT_RECEIVED_WITH_ERROR" };
     }
   }
@@ -96,12 +147,8 @@ exports.handler = async (event) => {
 
 /**
  * إرسال "رد خاص" (Private Reply) على تعليق معيّن عبر Instagram Messaging API
- * التوثيق الرسمي: Private Replies - Instagram Platform (Meta for Developers)
  */
 async function sendPrivateReply(commentId, message) {
-  // ملاحظة: عند الربط عبر "Instagram Login" مباشرة (بدون صفحة فيسبوك)،
-  // يكون التوكن من نوع "Instagram User Access Token"، ويجب استخدام
-  // نطاق graph.instagram.com بدلاً من graph.facebook.com
   const url = `https://graph.instagram.com/${GRAPH_API_VERSION}/me/messages?access_token=${PAGE_ACCESS_TOKEN}`;
 
   const payload = {
@@ -117,11 +164,5 @@ async function sendPrivateReply(commentId, message) {
 
   const data = await res.json();
 
-  if (!res.ok) {
-    console.error("Failed to send private reply:", data);
-  } else {
-    console.log("Private reply sent:", data);
-  }
-
-  return data;
+  return { httpStatus: res.status, ok: res.ok, response: data };
 }
