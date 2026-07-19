@@ -17,6 +17,22 @@ const LINK_MESSAGE = process.env.IG_LINK_MESSAGE || "تفضل الرابط: http
 const GRAPH_API_VERSION = "v21.0";
 
 exports.handler = async (event) => {
+  // ---------- 0) أداة تشخيص: تحقق من وصول المتغيرات دون كشف قيمها ----------
+  // افتح: https://YOUR-SITE.netlify.app/.netlify/functions/instagram-webhook?diag=1
+  if (event.httpMethod === "GET" && event.queryStringParameters && event.queryStringParameters.diag === "1") {
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        IG_VERIFY_TOKEN_set: Boolean(VERIFY_TOKEN),
+        IG_PAGE_ACCESS_TOKEN_set: Boolean(PAGE_ACCESS_TOKEN),
+        IG_PAGE_ACCESS_TOKEN_length: PAGE_ACCESS_TOKEN ? PAGE_ACCESS_TOKEN.length : 0,
+        IG_KEYWORD_value: KEYWORD,
+        IG_LINK_MESSAGE_value: LINK_MESSAGE,
+      }, null, 2),
+    };
+  }
+
   // ---------- 1) التحقق من الـ Webhook (خطوة تسجيل الرابط لدى Meta) ----------
   if (event.httpMethod === "GET") {
     const params = event.queryStringParameters || {};
@@ -56,7 +72,12 @@ exports.handler = async (event) => {
           // تجاهل تعليقات الحساب نفسه (لتفادي حلقة لا نهائية)
           if (value.from && value.from.id === entry.id) continue;
 
-          if (commentText.includes(KEYWORD)) {
+          // == وضع التشخيص المؤقت ==
+          // إذا كانت IG_KEYWORD فارغة، يرد البوت على أي تعليق بدون شرط
+          // (فقط لأغراض الاختبار، أعد الكلمة المفتاحية لاحقًا)
+          const matchesKeyword = KEYWORD === "" ? true : commentText.includes(KEYWORD);
+
+          if (matchesKeyword) {
             await sendPrivateReply(commentId, LINK_MESSAGE);
           }
         }
