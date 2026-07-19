@@ -1,0 +1,9 @@
+{
+  "name": "instagram-comment-to-dm",
+  "version": "1.0.0",
+  "description": "Netlify function: auto-send a private reply link when someone comments a keyword on Instagram",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  }
+}
