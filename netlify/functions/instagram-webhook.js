@@ -78,7 +78,10 @@ exports.handler = async (event) => {
  * التوثيق الرسمي: Private Replies - Instagram Platform (Meta for Developers)
  */
 async function sendPrivateReply(commentId, message) {
-  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/me/messages?access_token=${PAGE_ACCESS_TOKEN}`;
+  // ملاحظة: عند الربط عبر "Instagram Login" مباشرة (بدون صفحة فيسبوك)،
+  // يكون التوكن من نوع "Instagram User Access Token"، ويجب استخدام
+  // نطاق graph.instagram.com بدلاً من graph.facebook.com
+  const url = `https://graph.instagram.com/${GRAPH_API_VERSION}/me/messages?access_token=${PAGE_ACCESS_TOKEN}`;
 
   const payload = {
     recipient: { comment_id: commentId },
